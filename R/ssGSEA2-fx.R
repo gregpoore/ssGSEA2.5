@@ -893,28 +893,43 @@ project_geneset <- function (data.array,
                              min.overlap,
                              size.G.current){
   
+  # Initialize result vectors
   ES.vector <- NES.vector <- p.val.vector <- rep(NA, n.cols)
+  OL.vector <- OL.numb.vector <- OL.perc.vector <- rep(NA, n.cols)
   
+  # This is the internal scoring function from the package
+  gsea_score <- ssGSEA2:::gsea_score
+  
+  # Loop over each sample
   for (sample.index in 1:n.cols) {
-    # Prepare data for a single sample, removing NAs
+    
+    # Prepare data for a single sample, removing NA/Inf values
     data.expr.sample <- data.array[, sample.index]
     valid.indices <- !is.na(data.expr.sample) & !is.infinite(data.expr.sample)
     data.expr.sample <- data.expr.sample[valid.indices]
     gene.names.sample <- gene.names[valid.indices]
     n.rows.sample <- length(data.expr.sample)
     
-    # Perform sample-specific overlap check
+    # Perform the crucial, sample-specific overlap check
     gene.set.present <- intersect(gene.set, gene.names.sample)
     
+    # --- START OF THE FIX ---
+    # The original code had flawed logic here. This version ensures that if
+    # the overlap is insufficient, we record NA and skip to the next sample.
     if (length(gene.set.present) < min.overlap) {
-      next # Skip this sample if overlap is insufficient
+      # Record overlap stats even if it's too low
+      OL.numb.vector[sample.index] <- length(gene.set.present)
+      OL.perc.vector[sample.index] <- round(100 * (length(gene.set.present) / size.G.current), 1)
+      # Skip all calculations for this sample
+      next 
     }
+    # --- END OF THE FIX ---
     
-    # Get indices of gene set members in the current sample's data
+    # If we get here, the overlap is sufficient. Proceed with scoring.
     gene.set.indices <- match(gene.set.present, gene.names.sample)
+    gene.list.ranked <- order(data.expr.sample, decreasing = TRUE)
     
     # Calculate the REAL weighted score
-    gene.list.ranked <- order(data.expr.sample, decreasing = TRUE)
     real_es_result <- gsea_score(
       ordered.gene.list = gene.list.ranked,
       gene.set2 = gene.set.indices,
@@ -928,31 +943,31 @@ project_geneset <- function (data.array,
     )
     ES.vector[sample.index] <- real_es_result$ES
     
+    # Record overlap information
+    OL.numb.vector[sample.index] <- length(gene.set.present)
+    OL.perc.vector[sample.index] <- round(100 * (length(gene.set.present) / size.G.current), 1)
+    OL.vector[sample.index] <- paste(gene.set.present, collapse = "|")
+    
+    # Perform permutations if requested
     if (nperm > 0) {
-      # --- START CORRECTED PERMUTATION LOGIC ---
-      # Perform a true gene-label permutation.
+      # Use the corrected, statistically valid gene-label permutation
       null_scores <- replicate(nperm, {
-        # 1. Create a permuted expression vector by shuffling the gene names (labels).
-        permuted_data_expr <- data.expr.sample
-        names(permuted_data_expr) <- sample(names(data.expr.sample))
+        permuted.expr <- data.expr.sample
+        names(permuted.expr) <- sample(names(permuted.expr))
+        permuted.gene.list <- order(permuted.expr, decreasing = TRUE)
         
-        # 2. Now, create the ranked list from this truly permuted data.
-        permuted_gene_list <- order(permuted_data_expr, decreasing = TRUE)
-        
-        # 3. Call the scoring function with the new permuted ranks and data.
         gsea_score(
-          ordered.gene.list = permuted_gene_list,
-          gene.set2 = gene.set.indices, # Use original indices against permuted data
+          ordered.gene.list = permuted.gene.list,
+          gene.set2 = gene.set.indices,
           weight = weight,
           n.rows = n.rows.sample,
           correl.type = correl.type,
           gene.set.direction = gene.set.direction,
-          data.expr = permuted_data_expr, # Use the permuted data for weighting
+          data.expr = permuted.expr,
           statistic = statistic,
           min.overlap = min.overlap
         )$ES
       })
-      # --- END CORRECTED PERMUTATION LOGIC ---
       
       # Calculate NES and p-value from the valid null distribution
       if (ES.vector[sample.index] >= 0) {
@@ -969,15 +984,18 @@ project_geneset <- function (data.array,
         p.val.vector[sample.index] <- (sum(neg.phi <= ES.vector[sample.index]) + 1) / (length(neg.phi) + 1)
       }
     } else {
-        NES.vector[sample.index] <- ES.vector[sample.index]
-        p.val.vector[sample.index] <- NA
+      NES.vector[sample.index] <- ES.vector[sample.index]
+      p.val.vector[sample.index] <- NA
     }
   }
   
-  # The original function returned more, but we only need these for the final table
+  # Return all the necessary components for the main function to assemble
   return(list(ES.vector = ES.vector,
               NES.vector =  NES.vector,
-              p.val.vector = p.val.vector))
+              p.val.vector = p.val.vector,
+              OL.vector = OL.vector,
+              OL.numb.vector = OL.numb.vector,
+              OL.perc.vector = OL.perc.vector))
 }
 
 
